@@ -1,0 +1,259 @@
+<!doctype html>
+<html>
+<head>
+  <title>Cyclotomic polynomials</title>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <meta name='keywords' content='key, words'>
+  <meta name='description' content='Description.'>
+  <link rel='icon' type='image/x-icon' href='data:image/x-icon;base64,'>
+  <style>
+html, body { background: black; font-size: 18pt }
+body { margin: .5rem; color: white }
+label { margin-right: .5rem }
+ol { padding-left: 5rem }
+math { text-align: left }
+.cyc { color: #e26e6e }
+  </style>
+</head>
+<body>
+  <h1>Cyclotomic polynomial calculator</h1>
+  <button id='clear'>Clear</button>
+  <div>
+    <label for='begin'>Begin</label><input id='begin' type='number' min='1' required />
+  </div>
+  <div>
+    <label for='count'>Count</label><input id='count' type='number' min='1' required />
+  </div>
+  <button id='seq'>Sequential</button>
+  <div>
+    <label for='coeff'>Non-trivial coefficients</label><input id='coeff' min='1' type='number' required />
+  </div>
+  <button id='nonseq'>Non-sequential</button>
+  <ol></ol>
+  <template id='li'
+    ><li></li
+  ></template>
+  <template id='nth'
+    ><div
+      ><math display='block'
+        ><mrow class='term'></mrow
+      ></math
+    ></div
+  ></template>
+  <template id='sum'
+    ><mo></mo
+    ><mspace linebreak='newline' /
+  ></template>
+  <template id='mult'
+    ><mn></mn
+  ></template>
+  <template id='pow1'
+    ><mi>x</mi
+  ></template>
+  <template id='pow'
+    ><msup
+      ><mi>x</mi
+      ><mn></mn
+    ></msup
+  ></template>
+  <template id='eq'
+    ><mo>=</mo
+  ></template>
+  <template id='term'
+    ><mrow
+      ><mo>(</mo
+      ><mrow></mrow
+      ><mo>)</mo
+    ></mrow
+  ></template>
+  <template id='termpow'
+    ><msup
+      ><mrow
+        ><mo>(</mo
+        ><mrow></mrow
+        ><mo>)</mo
+      ></mrow
+      ><mn></mn
+    ></msup
+  ></template>
+  <script src='machine.js'></script>
+  <script>
+// Delineated continuations
+let DCont = (() => {
+  let tcoSym = Symbol('tco'),
+      trampoline = val => {
+        while (val?.tcoSym === tcoSym) val = val.fn(val.x);
+        return val
+      };
+  return class {
+    constructor (run) {
+      this.runDCont = fn => ({ fn: f => run(f || (x => x)), x: fn, tcoSym });
+      this.run = fn => trampoline(this.runDCont(fn))
+    }
+    static of (x) { return new DCont(resolve => resolve(x)) }
+    chain (fn) { return new DCont(resolve =>
+      this.runDCont(result => fn(result).runDCont(resolve))) }
+    map (fn) { return this.chain(x => DCont.of(fn(x))) }
+    ap (c) { return this.chain(fn => c.map(fn)) }
+    static callcc (fn) { return new DCont(resolve => fn(x => new DCont(() => resolve(x))).runDCont(resolve)) }
+    static shift (subc) { return new DCont(resolve => subc(dc => dc.map(resolve)).runDCont()) }
+    reset () { return new DCont(resolve => resolve(this.runDCont())) }
+  }
+})();
+
+// Page state
+var app = new $.Machine({ polys: new Map(), nth: 0, dc: DCont.of(), timing: null });
+
+let nats = function* (n) { while (true) yield n++ },
+    primes = function* () { yield* sieve(primes(), nats(2)) },
+    sieve = function* (pg, ng) {
+      yield ng.next().value;
+      let n, p = pg.next().value;
+      while ((n = ng.next().value) < p * p) yield n;
+      yield* sieve(pg, (function* () {
+        while (n = ng.next().value) if (n % p) yield n
+      })())
+    },
+    primeFactors = function (n) {
+      let pg = primes(), p = pg.next().value, res = new Map();
+      while (p * p <= n) if (n % p) p = pg.next().value;
+        else {
+          n /= p;
+          res.set(p, (res.get(p) ?? 0) + 1)
+        }
+      n > 1 && res.set(n, (res.get(n) ?? 0) + 1);
+      return res
+    },
+    factors = function (n) {
+      let fcs = [1];
+      for (let [k, v] of primeFactors(n))
+        for (let f of fcs.slice())
+          for (let m = 0, a = k; m < v; m++, a *= k)
+            fcs.push(f * a);
+      return fcs.sort((a, b) => a - b).slice(0, fcs.length - 1)
+    };
+
+// Events
+$.targets({
+  app: {
+    init (begin, count, coeff) {
+      let loop = () => new DCont(r => setTimeout(() => count-- > 0 ? r() :
+        console.log((performance.now() - this.timing)/1000 + 'sec'), 0))
+        .map(() => app.emit('update', coeff).dc.chain(loop).run());
+      this.nth = begin - 1;
+      this.timing = performance.now();
+      this.dc = loop()
+    },
+
+    update (coeff) {
+      function termNode (mult, pow, node) {
+        if (mult > 1 || pow === 0)
+          $.load('mult', 'mrow', node)[0][0].textContent = mult;
+        if (1 === pow) $.load('pow1', 'mrow', node);
+        else if (1 < pow) {
+          let term = $.load('pow', 'mrow', node)[0][0];
+          $('mn', term)[0].textContent = pow
+        }
+      }
+      function polyNode (poly, node) {
+        termNode(1, poly.length - 1, node);
+        poly.slice(1).forEach((x, i) => {
+          if (x === 0) return;
+          let sumNode = $.load('sum', 'mrow', node)[0][0];
+          sumNode.textContent = x > 0 ? '+' : '-';
+          x = Math.abs(x);
+          termNode(x, poly.length - i - 2, node)
+        });
+      }
+      this.dc = app.emit(...(coeff ? ['nontrivCoef', coeff] : ['calc', ++this.nth])).dc.map(() => {
+        let outputNode = $('#nth')[0].content.cloneNode(true);
+        termNode(1, this.nth, outputNode);
+        $.load('sum', 'mrow', outputNode)[0][0].textContent = '-';
+        $.load('mult', 'mrow', outputNode)[0][0].textContent = 1;
+        $.load('eq', 'mrow', outputNode);
+        factors(this.nth)
+          .sort((x, y) => {
+            let xp = this.polys.get(x), yp = this.polys.get(y);
+            return xp.length - yp.length ||
+              (c => c === undefined ? false : (c !== 0) - (c === 0))
+                (xp.find((c, i) => (c === 0) !== (yp[i] === 0))) ||
+              (i => xp[i] - yp[i])(xp.findIndex((c, i) => c - yp[i]))
+          })
+          .forEach(k => polyNode(this.polys.get(k), $.load('term', 'mrow.term', outputNode)[0][0]));
+        let enc = $.load('term', 'mrow.term', outputNode)[0][0];
+        enc.classList.add('cyc');
+        polyNode(this.polys.get(this.nth), enc)
+        let item = $.load('li', 'ol')[0][0];
+        item.setAttribute('value', this.nth);
+        item.innerHTML = outputNode.firstChild.innerHTML
+      })
+    },
+
+    calc (nth) {
+      this.dc = DCont.of().chain(() => {
+        let poly = new Int8Array(nth + 1);
+        poly[0] = 1;
+        poly[nth] = -1;
+        this.polys.set(nth, poly)
+        return factors(nth).reduce((dc, i) => dc = dc
+          .chain(() => {
+            let test = this.polys.get(i);
+            return test ? DCont.of(test) :
+              app.emit('calc', i).dc.map(() => this.polys.get(i))
+          })
+          .map(test => {
+            let cur = this.polys.get(nth).slice();
+            for (let j = 0; j < cur.length - test.length + 1; j++)
+              for (let k = 1; k < test.length; k++)
+                cur[j + k] -= cur[j] * test[k];
+            this.polys.set(nth, cur.slice(0, cur.length - test.length + 1))
+          }), DCont.of())
+      })
+    },
+
+    nontrivCoef (n) {
+      this.dc = DCont.of().chain(() => {
+        let loop = () => app.emit('calc', ++this.nth).dc
+                .chain(() => this.polys.get(this.nth).every(x => Math.abs(x) < n) ?
+                  loop() : DCont.of());
+        return loop()
+      })
+    },
+  }
+})
+
+$.queries({
+  '#seq': {
+    click () {
+      if ($('#begin')[0].validity.valueMissing ||
+        $('#count')[0].validity.valueMissing) return;
+      $('#clear')[0].click();
+      let begin = $('#begin')[0].valueAsNumber,
+          count = $('#count')[0].valueAsNumber;
+      app.emit('init', begin, count).dc.run()
+    }
+  },
+  '#nonseq': {
+    click () {
+      if ($('#begin')[0].validity.valueMissing ||
+        $('#count')[0].validity.valueMissing ||
+        $('#coeff')[0].validity.valueMissing) return;
+      $('#clear')[0].click();
+      let begin = $('#begin')[0].valueAsNumber,
+          count = $('#count')[0].valueAsNumber
+          coeff = $('#coeff')[0].valueAsNumber;
+      app.emit('init', begin, count, coeff).dc.run()
+    }
+  },
+  '#clear': {
+    click () {
+      let lis = $('ol')[0];
+      while (lis.childNodes.length) lis.lastChild.remove()
+    }
+  }
+})
+  </script>
+  <noscript><h6>Only viewable with JavaScript enabled.</h6></noscript>
+</body>
+</html>
